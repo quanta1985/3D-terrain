@@ -103,43 +103,43 @@ def prepare_xyz(data, transform):
 
 def plot_3d_surface(X, Y, Z, colormap, z_scale, show_grid, z_min, z_max, plot_height, title_text, show_contours, use_hillshade):
     
-    # 1. Scale dữ liệu Z để vẽ hình khối
+    # 1. Scale dữ liệu Z để vẽ hình khối (Trục Z hiển thị)
     Z_plot = Z * z_scale
     
     # 2. Clip dữ liệu hiển thị (theo slider)
     if z_min is not None: Z_plot[Z_plot < z_min * z_scale] = z_min * z_scale
     if z_max is not None: Z_plot[Z_plot > z_max * z_scale] = z_max * z_scale
 
-    # 3. FIX LỖI TOOLTIP: Tạo ma trận text riêng biệt
-    # Thay vì để Plotly tự format (dễ lỗi), ta format trước bằng Python
-    # Tạo mảng text có cùng kích thước với Z
-    # Xử lý NaN để tránh lỗi format
-    Z_safe = np.nan_to_num(Z, nan=0.0) 
-    # Vectorize việc tạo string để nhanh hơn
-    # (Nếu dữ liệu quá lớn, loop có thể chậm, nhưng với max_dim=500-1000 thì ổn)
-    # Cách đơn giản và an toàn nhất cho tooltip:
-    hover_text = np.array([["{:.2f}".format(val) if not np.isnan(val) else "N/A" for val in row] for row in Z])
-
-    # 4. Hiệu ứng Hillshade
+    # 3. Hiệu ứng Hillshade
     lighting_effect = dict(ambient=0.4, diffuse=0.5, roughness=0.1, specular=0.4, fresnel=0.1)
     if use_hillshade:
         lighting_effect = dict(ambient=0.3, diffuse=0.6, roughness=0.7, specular=0.1, fresnel=0.1)
 
-    # 5. Đường đồng mức
+    # 4. Đường đồng mức
     contours_cfg = dict(
         z=dict(show=show_contours, usecolormap=False, project_z=False, color="white", width=2)
     )
 
-    # 6. Tạo Surface
+    # 5. Tạo Surface
+    # FIX: Truyền trực tiếp Z (dữ liệu gốc) vào customdata để tooltip đọc
     surface = go.Surface(
-        z=Z_plot, x=X, y=Y, 
+        z=Z_plot, # Dữ liệu vẽ (đã nhân scale)
+        x=X, 
+        y=Y,
+        customdata=Z, # <--- Dữ liệu gốc để hiển thị tooltip
         colorscale=colormap,
         cmin=np.nanmin(Z_plot), cmax=np.nanmax(Z_plot),
         
-        # TRUYỀN TEXT MATRIX VÀO ĐÂY
-        text=hover_text, 
-        # Sử dụng %{text} để lấy giá trị đã format từ Python
-        hovertemplate="<b>X:</b> %{x:.1f}<br><b>Y:</b> %{y:.1f}<br><b>Độ cao gốc:</b> %{text} m<extra></extra>",
+        # Cấu hình Tooltip chuẩn:
+        # %{z:.1f}: Giá trị trục Z hiện tại (đã nhân phóng đại)
+        # %{customdata:.2f}: Giá trị Z gốc
+        hovertemplate=(
+            "<b>X:</b> %{x:.1f}<br>"
+            "<b>Y:</b> %{y:.1f}<br>"
+            "<b>Z (Mô hình):</b> %{z:.1f}<br>"
+            "<b>Z (Thực tế):</b> %{customdata:.2f} m"
+            "<extra></extra>" # Ẩn phần tên trace bên cạnh
+        ),
         
         colorbar=dict(title='Elev (m)', len=0.7, thickness=15, x=0.9),
         lighting=lighting_effect,
@@ -323,4 +323,12 @@ if uploaded_file:
     """, unsafe_allow_html=True)
 
 else:
-    st.info("👈 Vui lòng upload dữ liệu ở Sidebar để bắt đầu.")
+    # Sửa lỗi hiển thị bị che: Thêm khoảng trắng lớn ở trên
+    st.markdown("<br><br><br>", unsafe_allow_html=True) 
+    st.info("👈 Vui lòng upload dữ liệu ở Sidebar (Bên trái) để bắt đầu.")
+    st.markdown("""
+    <div style="text-align:center; color: gray; margin-top: 50px;">
+        <h3>GeoSpatial 3D Viewer</h3>
+        <p>Hỗ trợ hiển thị TIF, ASC, TXT với khả năng tùy biến 3D mạnh mẽ.</p>
+    </div>
+    """, unsafe_allow_html=True)
