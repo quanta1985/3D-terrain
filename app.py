@@ -6,20 +6,26 @@ from rasterio.crs import CRS
 import numpy as np
 import plotly.graph_objects as go
 import base64
+import io  # <--- Đã thêm thư viện này để fix lỗi NameError
 
 # --- Cấu hình trang (Page Config) ---
 st.set_page_config(
     layout="wide", 
-    page_title="GeoSpatial 3D Viewer",
+    page_title="GeoSpatial 3D Viewer Pro",
     page_icon="🏔️",
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS để làm đẹp giao diện
+# Custom CSS
 st.markdown("""
     <style>
     .block-container {padding-top: 1rem; padding-bottom: 2rem;}
     .stAlert {padding: 0.5rem;}
+    /* Làm đẹp cho phần metrics */
+    div[data-testid="stMetricValue"] {
+        font-size: 1.2rem;
+        color: #00CC96;
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -32,10 +38,8 @@ def load_and_downsample_dem(file_content, filename, max_dim=500):
     try:
         with MemoryFile(file_content, filename=filename) as memfile:
             with memfile.open() as dataset:
-                profile = dataset.profile
                 orig_w, orig_h = dataset.width, dataset.height
                 
-                # Tính scale factor
                 scale = 1
                 if orig_w > max_dim or orig_h > max_dim:
                     scale = max_dim / max(orig_w, orig_h)
@@ -89,164 +93,228 @@ def prepare_xyz(data, transform):
     X, Y = np.meshgrid(xs, ys)
     return X, Y, data
 
-def plot_3d_surface(X, Y, Z, colormap, z_scale, show_grid, z_min, z_max, plot_height, title_text):
+def plot_3d_surface(X, Y, Z, colormap, z_scale, show_grid, z_min, z_max, plot_height, title_text, show_contours, use_hillshade):
+    
+    # 1. Xử lý dữ liệu vẽ (Z_plot) đã nhân scale
     Z_plot = Z * z_scale
     
-    # Clip dữ liệu hiển thị (không thay đổi dữ liệu gốc)
+    # Clip dữ liệu hiển thị
     if z_min is not None: Z_plot[Z_plot < z_min * z_scale] = z_min * z_scale
     if z_max is not None: Z_plot[Z_plot > z_max * z_scale] = z_max * z_scale
 
-    fig = go.Figure(data=[go.Surface(
+    # 2. Cấu hình Hillshade (Lighting)
+    # Nếu bật Hillshade, ta tăng độ nhám (roughness) và giảm ambient light để tạo bóng đổ rõ hơn
+    lighting_effect = dict(
+        ambient=0.4, diffuse=0.5, roughness=0.1, specular=0.4, fresnel=0.1
+    )
+    if use_hillshade:
+        lighting_effect = dict(
+            ambient=0.3,      # Tối hơn để bóng rõ hơn
+            diffuse=0.6, 
+            roughness=0.7,    # Bề mặt nhám hơn
+            specular=0.1,     # Giảm độ bóng loáng
+            fresnel=0.1
+        )
+
+    # 3. Cấu hình Contour
+    contours_cfg = dict(
+        z=dict(
+            show=show_contours,
+            usecolormap=False,
+            project_z=False, # Vẽ trực tiếp lên bề mặt
+            color="white",   # Màu đường đồng mức
+            width=2          # Độ dày
+        )
+    )
+
+    # 4. Tạo Surface
+    # Quan trọng: customdata=Z (dữ liệu gốc chưa nhân scale)
+    # hovertemplate dùng %{customdata} để hiển thị
+    surface = go.Surface(
         z=Z_plot, x=X, y=Y, 
         colorscale=colormap,
         cmin=np.nanmin(Z_plot), cmax=np.nanmax(Z_plot),
-        colorbar=dict(title='Elev (m)', len=0.7, thickness=15),
-        hoverinfo='x+y+z',
-        contours_z=dict(show=True, usecolormap=True, highlightcolor="limegreen", project_z=True)
-    )])
+        customdata=Z, # <--- Truyền Z gốc vào đây
+        hovertemplate="<b>X:</b> %{x:.1f}<br><b>Y:</b> %{y:.1f}<br><b>Độ cao gốc:</b> %{customdata:.2f} m<extra></extra>",
+        colorbar=dict(title='Elev (m)', len=0.7, thickness=15, x=0.9),
+        lighting=lighting_effect,
+        contours=contours_cfg
+    )
+
+    fig = go.Figure(data=[surface])
 
     fig.update_layout(
         title=dict(text=title_text, x=0, font=dict(size=14, color="#555")),
         autosize=True, 
-        height=plot_height, # Chiều cao tùy biến
+        height=plot_height, 
         margin=dict(l=10, r=10, b=10, t=30),
         scene=dict(
             xaxis=dict(title='', showgrid=show_grid, visible=show_grid, showticklabels=show_grid),
             yaxis=dict(title='', showgrid=show_grid, visible=show_grid, showticklabels=show_grid),
             zaxis=dict(title='', showgrid=show_grid, visible=show_grid, showticklabels=show_grid),
-            aspectmode='data', # Giữ tỷ lệ 1:1:1
-            camera=dict(eye=dict(x=1.5, y=1.5, z=0.5)) # Góc nhìn mặc định đẹp hơn
+            aspectmode='data', 
+            camera=dict(eye=dict(x=-1.5, y=-1.5, z=0.5)) 
         ),
-        paper_bgcolor='rgba(0,0,0,0)', # Nền trong suốt
+        paper_bgcolor='rgba(0,0,0,0)',
         plot_bgcolor='rgba(0,0,0,0)'
     )
     return fig
 
 # -----------------------------------------------------------------------------
-# 2. GIAO DIỆN NGƯỜI DÙNG (SIDEBAR CONTROLS)
+# 2. GIAO DIỆN NGƯỜI DÙNG (SIDEBAR)
 # -----------------------------------------------------------------------------
 
-st.sidebar.title("🛠️ Cấu hình dữ liệu")
+st.sidebar.title("🛠️ Cấu hình")
 
-# --- 1. Upload & Input ---
+# --- 1. Upload ---
 uploaded_file = st.sidebar.file_uploader("1. Chọn File (TIF/ASC/TXT)", type=['tif', 'tiff', 'asc', 'txt'])
 
 if uploaded_file:
-    # --- 2. Xử lý CRS (Ngay trong Sidebar) ---
+    # --- 2. Xử lý CRS ---
     st.sidebar.markdown("---")
     st.sidebar.subheader("2. Hệ tọa độ (CRS)")
     
-    # Load data tạm thời để check CRS
+    # Load data tạm để check
     with st.spinner("Đang đọc dữ liệu..."):
         data, transform, raw_crs, nodata, orig_dims = load_and_downsample_dem(
-            uploaded_file.getvalue(), uploaded_file.name, max_dim=2000 # Load full check trước
+            uploaded_file.getvalue(), uploaded_file.name, max_dim=1000 # Load sơ bộ
         )
 
     if data is None:
-        st.sidebar.error("Lỗi format file!")
+        st.sidebar.error("Lỗi đọc file! Vui lòng kiểm tra format.")
         st.stop()
-
-    # Logic CRS
-    use_crs = raw_crs
-    crs_status = "✅ Hợp lệ"
     
-    if raw_crs is None:
-        st.sidebar.warning("⚠️ File thiếu CRS")
-        user_crs_input = st.sidebar.text_input("Nhập EPSG (VD: EPSG:4326)", value="EPSG:4326")
-        try:
-            use_crs = CRS.from_string(user_crs_input)
-        except:
+    # CRS Logic cải tiến
+    use_crs = None
+    
+    # Radio button chọn chế độ
+    crs_mode = st.sidebar.radio(
+        "Chế độ xác định tọa độ:",
+        ("Tự động (Từ file)", "Thủ công (Chọn/Nhập)"),
+        horizontal=True
+    )
+    
+    if crs_mode == "Tự động (Từ file)":
+        if raw_crs:
+            st.sidebar.success(f"✅ Đã tìm thấy: {raw_crs.to_string()}")
+            use_crs = raw_crs
+        else:
+            st.sidebar.warning("⚠️ Không tìm thấy CRS trong file. Vui lòng chuyển sang 'Thủ công'.")
             use_crs = None
-            crs_status = "❌ Không hợp lệ"
-    else:
-        st.sidebar.caption(f"Gốc: {raw_crs.to_string()}")
-    
-    if use_crs is None:
-        st.sidebar.error("Vui lòng nhập CRS đúng.")
-        st.stop()
+    else: # Chế độ Thủ công
+        # Danh sách CRS phổ biến
+        common_crs = {
+            "WGS 84 (EPSG:4326)": "EPSG:4326",
+            "Web Mercator (EPSG:3857)": "EPSG:3857",
+            "VN-2000 / UTM zone 48N (EPSG:3405)": "EPSG:3405",
+            "VN-2000 / UTM zone 49N (EPSG:3406)": "EPSG:3406",
+            "WGS 84 / UTM zone 48N (EPSG:32648)": "EPSG:32648",
+            "WGS 84 / UTM zone 49N (EPSG:32649)": "EPSG:32649",
+            "Nhập mã khác...": "Custom"
+        }
+        selected_crs_name = st.sidebar.selectbox("Chọn hệ tọa độ:", list(common_crs.keys()))
         
-    # Reproject Check
-    is_geographic = use_crs.is_geographic
-    if is_geographic:
-        st.sidebar.info("ℹ️ Đang dùng Lat/Lon. Tự động chuyển sang Mét khi vẽ.")
+        if selected_crs_name == "Nhập mã khác...":
+            custom_epsg = st.sidebar.text_input("Nhập mã EPSG (VD: EPSG:32648)", "")
+            if custom_epsg:
+                try:
+                    use_crs = CRS.from_string(custom_epsg)
+                except:
+                    st.sidebar.error("Mã không hợp lệ.")
+        else:
+            use_crs = CRS.from_string(common_crs[selected_crs_name])
 
-    # --- 3. Cấu hình Hiển thị (Visuals) ---
+    if use_crs is None:
+        st.sidebar.error("⛔ Cần xác định CRS để tiếp tục.")
+        st.stop()
+
+    # --- 3. Settings Hiển thị ---
     st.sidebar.markdown("---")
-    st.sidebar.subheader("3. Giao diện & Hiệu năng")
+    st.sidebar.subheader("3. Giao diện & Hiệu ứng")
     
-    with st.sidebar.expander("⚙️ Tùy chỉnh nâng cao", expanded=False):
-        max_pixels = st.slider("Độ phân giải (Max Pixel)", 100, 1000, 400, 50, help="Số càng nhỏ chạy càng nhanh.")
-        plot_height = st.slider("Chiều cao khung hình (px)", 300, 1000, 500, 50)
-        show_grid = st.checkbox("Hiển thị lưới", True)
+    col_s1, col_s2 = st.sidebar.columns(2)
+    with col_s1:
+        plot_height = st.slider("Chiều cao khung (px)", 300, 1000, 600, 50)
+    with col_s2:
+        max_pixels = st.slider("Độ phân giải (Max)", 100, 1500, 500, 100)
 
-    st.sidebar.markdown("🎨 **Màu sắc & Hình khối**")
+    # Các hiệu ứng đặc biệt
+    st.sidebar.markdown("**🎨 Style Địa hình**")
     cmap = st.sidebar.selectbox("Bảng màu", ['Earth', 'Viridis', 'Plasma', 'Turbo', 'RdBu', 'Magma'], index=0)
-    z_scale = st.sidebar.slider("Độ cao (Z-Scale)", 0.5, 5.0, 1.0, 0.1)
+    
+    col_e1, col_e2 = st.sidebar.columns(2)
+    with col_e1:
+        show_contours = st.checkbox("Show Contours", value=False, help="Hiển thị đường đồng mức")
+    with col_e2:
+        use_hillshade = st.checkbox("Hillshade Effect", value=True, help="Tăng bóng đổ để khối địa hình rõ hơn")
 
-    # Reload với resolution user chọn
+    z_scale = st.sidebar.slider("Vertical Exaggeration (Z-Scale)", 0.5, 10.0, 1.5, 0.1, help="Kéo lên để địa hình trông 'cao' hơn, không ảnh hưởng số liệu gốc.")
+    show_grid = st.sidebar.checkbox("Hiển thị lưới tọa độ", value=True)
+
+    # --- 4. Main Processing & Plotting ---
+    
+    # Reload data with user resolution
     data, transform, _, _, _ = load_and_downsample_dem(
         uploaded_file.getvalue(), uploaded_file.name, max_dim=max_pixels
     )
     
-    # Xử lý reproject final
+    # Reproject logic
     final_data = data
     final_transform = transform
-    if is_geographic:
+    if use_crs.is_geographic:
+        # Nếu đang là Lat/Lon, tự động chuyển sang Mét (Web Mercator) để vẽ 3D đẹp
+        # (Lưu ý: Logic này giữ nguyên để đảm bảo tỷ lệ 1:1:1)
         final_data, final_transform, _ = reproject_to_metric(data, transform, use_crs)
 
-    # --- 4. Main Display ---
-    # Layout chính chia làm 2 phần: Header/Stats và Plot
+    # --- DASHBOARD INFO ---
+    st.title("🏔️ 3D Terrain Analysis")
     
-    st.title("🏔️ 3D Terrain Viewer")
-    
-    # Tính toán thống kê
+    # Tính thống kê
     min_z, max_z = float(np.nanmin(final_data)), float(np.nanmax(final_data))
-    mean_z = float(np.nanmean(final_data))
     
-    # Hiển thị Metrics đẹp mắt
-    col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-    col_m1.metric("Min Elev", f"{min_z:.1f} m")
-    col_m2.metric("Max Elev", f"{max_z:.1f} m")
-    col_m3.metric("Mean Elev", f"{mean_z:.1f} m")
-    col_m4.metric("Grid Size", f"{final_data.shape[1]}x{final_data.shape[0]}")
+    col_m1, col_m2, col_m3 = st.columns(3)
+    col_m1.metric("Min Elevation", f"{min_z:.1f} m")
+    col_m2.metric("Max Elevation", f"{max_z:.1f} m")
+    col_m3.metric("Grid Dimensions", f"{final_data.shape[1]} x {final_data.shape[0]} px")
 
-    # Slider cắt lớp (Z Range) đặt ngay trên biểu đồ để tiện thao tác
-    z_range = st.slider("🔍 Cắt lớp độ cao (Filter Elevation)", min_z, max_z, (min_z, max_z))
+    # Z-Range Slider (Filter)
+    z_range = st.slider("🔍 Cắt lớp độ cao (Elevation Filter)", min_z, max_z, (min_z, max_z))
 
-    # Vẽ biểu đồ
-    with st.spinner("Đang render 3D..."):
+    # --- PLOT 3D ---
+    with st.spinner("Đang dựng mô hình 3D..."):
         X, Y, Z = prepare_xyz(final_data, final_transform)
+        
         fig = plot_3d_surface(
-            X, Y, Z, cmap, z_scale, show_grid, 
-            z_range[0], z_range[1], plot_height, 
-            f"Mô hình 3D - {uploaded_file.name}"
+            X, Y, Z, 
+            colormap=cmap, 
+            z_scale=z_scale, 
+            show_grid=show_grid, 
+            z_min=z_range[0], 
+            z_max=z_range[1], 
+            plot_height=plot_height, 
+            title_text=f"Mô hình: {uploaded_file.name} | CRS: {use_crs.to_string()}",
+            show_contours=show_contours,
+            use_hillshade=use_hillshade
         )
+        
         st.plotly_chart(fig, use_container_width=True)
 
-    # Nút Download
-    # Tạo HTML string cho nút download
+    # --- DOWNLOAD BUTTON ---
     buffer = io.StringIO()
     fig.write_html(buffer, include_plotlyjs='cdn')
     html_bytes = buffer.getvalue().encode()
     encoded = base64.b64encode(html_bytes).decode()
     
     st.markdown(f"""
-        <a href="data:text/html;base64,{encoded}" download="3d_terrain.html">
+        <div style="text-align: right;">
+        <a href="data:text/html;base64,{encoded}" download="terrain_3d.html">
             <button style="background-color:#4CAF50; border:none; color:white; padding:10px 24px; border-radius:4px; cursor:pointer;">
-                📥 Tải xuống bản đồ 3D (HTML)
+                📥 Xuất báo cáo HTML
             </button>
         </a>
+        </div>
     """, unsafe_allow_html=True)
 
 else:
-    # Màn hình chờ (Landing State)
-    st.markdown(
-        """
-        <div style='text-align: center; padding: 50px;'>
-            <h1>👋 Chào mừng đến với Geo3D</h1>
-            <p>Vui lòng chọn file dữ liệu (<b>.tif, .asc, .txt</b>) từ thanh menu bên trái để bắt đầu.</p>
-            <p style='color: grey; font-size: 0.9em;'>Hỗ trợ hiển thị địa hình 3D, tự động xử lý hệ tọa độ và trực quan hóa dữ liệu GIS.</p>
-        </div>
-        """, unsafe_allow_html=True
-    )
-import io # Cần thêm thư viện này cho nút download
+    # Màn hình chờ
+    st.info("👈 Vui lòng upload dữ liệu ở Sidebar để bắt đầu.")
