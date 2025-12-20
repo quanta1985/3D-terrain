@@ -7,7 +7,7 @@ import numpy as np
 import plotly.graph_objects as go
 
 # Cấu hình trang Streamlit
-st.set_page_config(layout="wide", page_title="DEM 3D Visualizer (TIF & ASC)")
+st.set_page_config(layout="wide", page_title="DEM 3D Visualizer (TIF, ASC, TXT)")
 
 # -----------------------------------------------------------------------------
 # 1. CÁC HÀM XỬ LÝ (PROCESSING FUNCTIONS)
@@ -16,46 +16,51 @@ st.set_page_config(layout="wide", page_title="DEM 3D Visualizer (TIF & ASC)")
 @st.cache_data(show_spinner=False)
 def load_and_downsample_dem(file_content, filename, max_dim=500):
     """
-    Đọc file DEM (TIF hoặc ASC).
-    Quan trọng: Cần truyền filename vào MemoryFile để rasterio nhận diện driver (đặc biệt là .asc).
+    Đọc file DEM (TIF, ASC, TXT).
+    filename được truyền vào để rasterio nhận diện driver (AAIGrid cho .asc/.txt).
     """
-    # Sử dụng filename để rasterio đoán driver (VD: .asc -> AAIGrid)
-    with MemoryFile(file_content, filename=filename) as memfile:
-        with memfile.open() as dataset:
-            profile = dataset.profile
-            orig_width = dataset.width
-            orig_height = dataset.height
-            
-            # Tính toán scale factor
-            scale = 1
-            if orig_width > max_dim or orig_height > max_dim:
-                scale = max_dim / max(orig_width, orig_height)
-            
-            new_width = int(orig_width * scale)
-            new_height = int(orig_height * scale)
-            
-            # Đọc dữ liệu (Downsample)
-            data = dataset.read(
-                1,
-                out_shape=(new_height, new_width),
-                resampling=Resampling.bilinear
-            )
-            
-            # Cập nhật transform
-            transform = dataset.transform * dataset.transform.scale(
-                (dataset.width / data.shape[1]),
-                (dataset.height / data.shape[0])
-            )
-            
-            # Xử lý nodata
-            if dataset.nodata is not None:
-                data = data.astype('float32')
-                data[data == dataset.nodata] = np.nan
-            
-            # Lấy CRS gốc (có thể là None đối với file .asc)
-            raw_crs = dataset.crs
-            
-            return data, transform, raw_crs, dataset.nodata
+    try:
+        with MemoryFile(file_content, filename=filename) as memfile:
+            with memfile.open() as dataset:
+                profile = dataset.profile
+                orig_width = dataset.width
+                orig_height = dataset.height
+                
+                # Tính toán scale factor để downsample
+                scale = 1
+                if orig_width > max_dim or orig_height > max_dim:
+                    scale = max_dim / max(orig_width, orig_height)
+                
+                new_width = int(orig_width * scale)
+                new_height = int(orig_height * scale)
+                
+                # Đọc dữ liệu
+                data = dataset.read(
+                    1,
+                    out_shape=(new_height, new_width),
+                    resampling=Resampling.bilinear
+                )
+                
+                # Cập nhật transform
+                transform = dataset.transform * dataset.transform.scale(
+                    (dataset.width / data.shape[1]),
+                    (dataset.height / data.shape[0])
+                )
+                
+                # Xử lý nodata
+                if dataset.nodata is not None:
+                    data = data.astype('float32')
+                    data[data == dataset.nodata] = np.nan
+                
+                # Lấy CRS gốc (thường None với asc/txt)
+                raw_crs = dataset.crs
+                
+                return data, transform, raw_crs, dataset.nodata
+    except Exception as e:
+        # Bắt lỗi nếu file txt không đúng định dạng ESRI Grid
+        st.error(f"Lỗi khi đọc file: {e}")
+        st.error("Lưu ý: File .txt/.asc phải theo chuẩn ESRI ASCII Grid (có header ncols, nrows...).")
+        return None, None, None, None
 
 def reproject_to_metric(data, transform, src_crs):
     """
@@ -123,50 +128,55 @@ def plot_3d_surface(X, Y, Z, colormap='Viridis', z_scale=1.0, show_grid=True, z_
 # -----------------------------------------------------------------------------
 
 st.title("🏔️ GIS 3D DEM Visualizer")
-st.markdown("Hỗ trợ GeoTIFF (.tif) và ESRI ASCII (.asc).")
+st.markdown("Hỗ trợ GeoTIFF (.tif), ESRI ASCII (.asc) và Text Grid (.txt).")
 
 # --- Sidebar: Input ---
 st.sidebar.header("1. Data Input")
-# Cập nhật: Thêm 'asc' vào loại file hỗ trợ
-uploaded_file = st.sidebar.file_uploader("Upload DEM", type=['tif', 'tiff', 'asc'])
+
+# Cập nhật: Thêm 'txt' vào danh sách hỗ trợ
+uploaded_file = st.sidebar.file_uploader(
+    "Upload DEM", 
+    type=['tif', 'tiff', 'asc', 'txt'],
+    help="Với file .txt/.asc, đảm bảo định dạng là ESRI ASCII Grid."
+)
 
 if uploaded_file is not None:
     st.sidebar.header("2. Settings")
     max_pixels = st.sidebar.slider("Max Resolution (px)", 100, 2000, 500, 100)
 
-    # Load Data (truyền uploaded_file.name để rasterio nhận dạng driver)
+    # Load Data
     with st.spinner("Đang đọc file..."):
         data, transform, raw_crs, nodata = load_and_downsample_dem(
             uploaded_file.getvalue(), 
             uploaded_file.name, 
             max_dim=max_pixels
         )
+    
+    # Nếu load lỗi thì dừng
+    if data is None:
+        st.stop()
 
-    # --- CRS Handling Logic (Quan trọng cho file .asc) ---
+    # --- CRS Handling Logic ---
     st.markdown("### 🛠️ Cấu hình tọa độ (CRS)")
     
     col1, col2 = st.columns(2)
     with col1:
         st.info(f"CRS gốc từ file: `{raw_crs}`")
     
-    # Logic xác định CRS sử dụng
     use_crs = raw_crs
     
     with col2:
-        # Nếu file không có CRS (thường gặp ở .asc), gợi ý người dùng nhập
+        # Nếu file không có CRS (thường gặp ở .asc/.txt), gợi ý người dùng nhập
         default_crs_input = ""
         if raw_crs is None:
             st.warning("⚠️ File này thiếu thông tin tọa độ (CRS). Vui lòng nhập mã EPSG.")
-            default_crs_input = "EPSG:4326" # Mặc định gợi ý WGS84
+            default_crs_input = "EPSG:4326" 
         
-        # Cho phép người dùng ghi đè hoặc nhập mới
         user_crs_input = st.text_input(
             "Nhập/Ghi đè CRS (VD: EPSG:4326, EPSG:32648)", 
-            value=default_crs_input,
-            help="Nếu file .asc của bạn là Kinh độ/Vĩ độ, dùng EPSG:4326. Nếu là UTM, dùng mã tương ứng."
+            value=default_crs_input
         )
 
-    # Cố gắng parse CRS người dùng nhập
     if user_crs_input:
         try:
             use_crs = CRS.from_string(user_crs_input)
@@ -175,24 +185,21 @@ if uploaded_file is not None:
             st.error(f"Mã CRS không hợp lệ: {e}")
             use_crs = None
 
-    # Nếu vẫn không có CRS hợp lệ thì dừng lại
     if use_crs is None:
-        st.error("⛔ Không thể dựng hình 3D nếu không có hệ tọa độ. Vui lòng nhập mã EPSG ở trên.")
+        st.error("⛔ Không thể dựng hình 3D nếu không có hệ tọa độ.")
         st.stop()
 
-    # --- Reproject & Visualization Logic ---
-    
-    # Kiểm tra Geographic vs Projected
+    # --- Reproject Logic ---
     is_geographic = use_crs.is_geographic
     final_data = data
     final_transform = transform
 
     if is_geographic:
-        st.warning(f"File đang dùng hệ tọa độ địa lý (Độ). Sẽ tự động chuyển sang Mét (EPSG:3857) để vẽ 3D.")
+        st.warning(f"File đang dùng hệ tọa độ địa lý (Độ). Sẽ tự động chuyển sang Mét (EPSG:3857).")
         with st.spinner("Đang reproject sang hệ mét..."):
             final_data, final_transform, dst_crs = reproject_to_metric(data, transform, use_crs)
 
-    # Sidebar Visuals
+    # --- Sidebar Visuals ---
     st.sidebar.header("3. Visualization Controls")
     cmap = st.sidebar.selectbox("Colormap", ['Earth', 'Viridis', 'Plasma', 'Turbo', 'Gray'], index=0)
     z_scale = st.sidebar.slider("Vertical Exaggeration", 0.1, 10.0, 1.0, 0.1)
@@ -201,7 +208,7 @@ if uploaded_file is not None:
     z_range = st.sidebar.slider("Z Range", min_z, max_z, (min_z, max_z))
     show_grid = st.sidebar.checkbox("Show Grid", True)
 
-    # Render
+    # --- Render ---
     st.markdown("---")
     with st.spinner("Đang dựng hình 3D..."):
         X, Y, Z = prepare_xyz(final_data, final_transform)
@@ -209,4 +216,4 @@ if uploaded_file is not None:
         st.plotly_chart(fig, use_container_width=True)
 
 else:
-    st.info("👈 Upload file DEM (.tif hoặc .asc) để bắt đầu.")
+    st.info("👈 Upload file DEM (.tif, .asc, .txt) để bắt đầu.")
