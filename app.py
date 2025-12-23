@@ -276,7 +276,7 @@ if uploaded_file:
         final_data, final_transform, _ = reproject_to_metric(data, transform, use_crs)
 
     # --- DASHBOARD INFO ---
-    st.title("🏔️ 3D Terrain Analysis")
+    st.title("🏔️ GeoSpatial 3D Viewer")
     
     min_z, max_z = float(np.nanmin(final_data)), float(np.nanmax(final_data))
     
