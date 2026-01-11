@@ -152,7 +152,8 @@ def plot_3d_surface(X, Y, Z, colormap, z_scale, show_grid, z_min, z_max, plot_he
         title=dict(text=title_text, x=0, font=dict(size=14, color="#555")),
         autosize=True, 
         height=plot_height, 
-        margin=dict(l=10, r=10, b=10, t=30),
+        # Cập nhật Margin về 0 để tối ưu không gian, tạo cảm giác Cinematic (16:9)
+        margin=dict(l=0, r=0, b=0, t=30), 
         scene=dict(
             xaxis=dict(title='', showgrid=show_grid, visible=show_grid, showticklabels=show_grid),
             yaxis=dict(title='', showgrid=show_grid, visible=show_grid, showticklabels=show_grid),
@@ -235,7 +236,8 @@ if uploaded_file:
     
     col_s1, col_s2 = st.sidebar.columns(2)
     with col_s1:
-        plot_height = st.slider("Chiều cao khung (px)", 300, 1000, 600, 50)
+        # Cập nhật: Default 700 để tạo tỷ lệ khung hình 16:9 tốt hơn trên layout wide
+        plot_height = st.slider("Chiều cao khung (px)", 300, 1000, 700, 50)
     with col_s2:
         max_pixels = st.slider("Độ phân giải (Max)", 100, 1500, 500, 100)
 
